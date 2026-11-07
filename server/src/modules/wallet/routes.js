@@ -1,11 +1,11 @@
 const express = require('express');
 const { z } = require('zod');
-const { query, withTx } = require('../../db');
-const { asyncHandler } = require('../../errors');
+const { query, pool } = require('../../db');
+const { asyncHandler, HttpError } = require('../../errors');
 const { requireAuth, requireRole } = require('../../middleware/auth');
 const { resolveTeenId } = require('../family/access');
 const { getWalletState } = require('./service');
-const { checkPayment } = require('../../checkPayment');
+const { processPayment, RulesError } = require('../../rulesEngine');
 
 const router = express.Router();
 
@@ -45,21 +45,18 @@ const spendSchema = z.object({
   merchant: z.string().trim().min(1).max(60),
 });
 
-// The teen pays a (simulated) merchant. The rules engine decides; the ledger records it.
+// The teen pays a (simulated) merchant. The rules engine (src/rulesEngine.js) decides and
+// writes the ledger row in one locked transaction.
 // A declined payment is a normal answer (200 with approved: false), not an error.
 router.post('/transactions', requireAuth, requireRole('teen'), asyncHandler(async (req, res) => {
   const { amountPaise, category, merchant } = spendSchema.parse(req.body);
-  const result = await withTx(async (client) => {
-    const state = await getWalletState(client, req.user.id, { lock: true }); // lock stops two spends racing
-    const decision = checkPayment(state, amountPaise, category);
-    if (!decision.approved) return { approved: false, reason: decision.reason, message: MESSAGES[decision.reason] };
-    await client.query(
-      `INSERT INTO ledger_entries (wallet_id, amount_paise, type, category, merchant) VALUES ($1, $2, 'spend', $3, $4)`,
-      [state.walletId, -amountPaise, category.toLowerCase(), merchant]
-    );
-    return { approved: true, reason: null, balancePaise: state.balancePaise - amountPaise };
-  });
-  res.json(result);
+  try {
+    const result = await processPayment(pool, { teenId: req.user.id, amountPaise, category, merchant });
+    res.json(result.approved ? result : { ...result, message: MESSAGES[result.reason] });
+  } catch (err) {
+    if (err instanceof RulesError) throw new HttpError(err.code === 'WALLET_NOT_FOUND' ? 404 : 400, err.code, err.message);
+    throw err;
+  }
 }));
 
 module.exports = router;
