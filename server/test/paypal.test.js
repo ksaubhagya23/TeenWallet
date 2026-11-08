@@ -37,12 +37,12 @@ test('creates an order and returns the approval link', async () => {
   assert.strictEqual(log[1].opts.headers.Authorization, 'Bearer tok');
 });
 
-test('capture sends no body and no Content-Type', async () => {
+test('capture sends an empty JSON body with Content-Type application/json', async () => {
   const log = [];
   const pp = make({ ...TOKEN, 'POST /v2/checkout/orders/ORD1/capture': { status: 201, body: { status: 'COMPLETED' } } }, log);
   assert.strictEqual((await pp.captureOrder('ORD1')).status, 'COMPLETED');
-  assert.strictEqual(log[1].opts.body, undefined);
-  assert.strictEqual(log[1].opts.headers['Content-Type'], undefined);
+  assert.strictEqual(log[1].opts.body, '{}');
+  assert.strictEqual(log[1].opts.headers['Content-Type'], 'application/json');
 });
 
 test('turns PayPal errors into a readable error with the issue code', async () => {
