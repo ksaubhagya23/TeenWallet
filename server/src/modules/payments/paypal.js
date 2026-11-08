@@ -61,10 +61,14 @@ function createPayPal({ baseUrl, clientId, secret, fetchImpl = fetch }) {
   }
 
   // Capture is sent with no body and no Content-Type, as PayPal's docs show.
-  async function captureOrder(orderId) {
-    const data = await authed(`/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, { method: 'POST' });
-    return { status: data.status, raw: data };
-  }
+     async function captureOrder(orderId) {
+     const data = await authed(`/v2/checkout/orders/${encodeURIComponent(orderId)}/capture`, {
+       method: 'POST',
+       headers: { 'Content-Type': 'application/json' },
+       body: '{}',
+     });
+     return { status: data.status, raw: data };
+   }
 
   async function getOrder(orderId) {
     return authed(`/v2/checkout/orders/${encodeURIComponent(orderId)}`);
