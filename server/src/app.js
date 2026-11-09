@@ -26,8 +26,9 @@ app.use('/api', require('./modules/wallet/routes'));
 app.use('/api', require('./modules/rules/routes'));
 app.use('/api', require('./modules/goals/routes'));
 app.use('/api', require('./modules/lessons/routes'));
+app.use('/api', require('./modules/ai/routes'));
 app.use('/api', payments.api);
-// Still to build: Channel3 prices for goals, ai (Astropods + Elastic), notify.
+// Still to build: Channel3 prices for goals, notify.
 
 app.use((req, res, next) => next(new HttpError(404, 'NOT_FOUND', `No route for ${req.method} ${req.path}`)));
 app.use(errorMiddleware);
