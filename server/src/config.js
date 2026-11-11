@@ -21,8 +21,8 @@ module.exports = {
   ai: {
     baseUrl: (process.env.AI_BASE_URL || 'https://api.groq.com/openai/v1').replace(/\/$/, ''),
     apiKey: process.env.AI_API_KEY || '',
-    model: process.env.AI_MODEL || 'llama-3.1-8b-instant',
-    timeoutMs: Number(process.env.AI_TIMEOUT_MS || 8000),
+    model: process.env.AI_MODEL || 'openai/gpt-oss-20b',
+    timeoutMs: Number(process.env.AI_TIMEOUT_MS || 12000),
   },
   paypal: {
     baseUrl: process.env.PAYPAL_BASE_URL || 'https://api-m.sandbox.paypal.com',
