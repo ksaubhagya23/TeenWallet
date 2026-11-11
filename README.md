@@ -15,7 +15,7 @@ We use the PayPal developer platform in the free **sandbox** (Orders v2). Code: 
 PayPal is charged in USD at a fixed demo rate (`INR_PER_USD`, default 85). The wallet itself is in rupees.
 
 ## How we use AI
-The in-app **money tutor** (`POST /api/ai/ask`, code in `server/src/modules/ai/`) uses a **large language model** through any OpenAI-compatible API (Groq by default; Google Gemini and OpenRouter work too, set `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`).
+The in-app **money tutor** (`POST /api/ai/ask`, code in `server/src/modules/ai/`) uses a **large language model** through any OpenAI-compatible API (Groq by default with `openai/gpt-oss-20b`; Google Gemini and OpenRouter work too, set `AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`).
 1. Postgres full-text search finds the lesson that best matches the teen's question.
 2. The backend sends the question, that lesson and the teen's current savings goal to the model, with instructions to answer in at most 3 simple sentences, stay on money topics, and never recommend specific investments or ask for passwords or OTPs.
 3. If no key is configured or the model fails or times out, the answer comes straight from the lesson, so the app never breaks. The response says which one answered (`source: "ai"` or `"lessons"`).
