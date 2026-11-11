@@ -24,7 +24,18 @@ function buildMessages({ question, lesson, goal }) {
   ];
 }
 
-function createLlm({ baseUrl, apiKey, model, timeoutMs = 8000, fetchImpl = fetch }) {
+// Reasoning models (gpt-oss) spend tokens thinking before they answer, so they get a bigger budget
+// and a low reasoning effort. Other models get the plain request.
+function requestBody({ model, question, lesson, goal }) {
+  const body = { model, messages: buildMessages({ question, lesson, goal }), temperature: 0.4, max_tokens: 220 };
+  if (/gpt-oss/i.test(model)) {
+    body.max_tokens = 1200;
+    body.reasoning_effort = 'low';
+  }
+  return body;
+}
+
+function createLlm({ baseUrl, apiKey, model, timeoutMs = 12000, fetchImpl = fetch }) {
   const enabled = Boolean(apiKey);
 
   // Returns the model's answer as text. Throws if the call fails, so the caller can fall back.
@@ -36,7 +47,7 @@ function createLlm({ baseUrl, apiKey, model, timeoutMs = 8000, fetchImpl = fetch
       const res = await fetchImpl(`${baseUrl}/chat/completions`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-        body: JSON.stringify({ model, messages: buildMessages({ question, lesson, goal }), temperature: 0.4, max_tokens: 220 }),
+        body: JSON.stringify(requestBody({ model, question, lesson, goal })),
         signal: controller.signal,
       });
       if (!res.ok) throw new Error(`AI provider answered ${res.status}`);
@@ -52,4 +63,4 @@ function createLlm({ baseUrl, apiKey, model, timeoutMs = 8000, fetchImpl = fetch
   return { enabled, model, ask };
 }
 
-module.exports = { createLlm, buildMessages, SYSTEM_PROMPT };
+module.exports = { createLlm, buildMessages, requestBody, SYSTEM_PROMPT };
