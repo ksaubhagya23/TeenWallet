@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
-const { createLlm, buildMessages } = require('../src/modules/ai/llm');
+const { createLlm, buildMessages, requestBody } = require('../src/modules/ai/llm');
 
 const lesson = { title: 'Why saving works', body: 'Saving is good.' };
 const goal = { title: 'Headphones', target_paise: '200000', saved_paise: '5000' };
@@ -52,4 +52,13 @@ test('gives up after the timeout', async () => {
   const slow = (url, opts) => new Promise((_, reject) => opts.signal.addEventListener('abort', () => reject(new Error('aborted'))));
   const llm = createLlm({ baseUrl: 'http://x', apiKey: 'K', model: 'm', timeoutMs: 20, fetchImpl: slow });
   await assert.rejects(() => llm.ask({ question: 'hi' }), /aborted/);
+});
+
+test('reasoning models get a bigger token budget and low reasoning effort', () => {
+  const plain = requestBody({ model: 'some-model', question: 'hi', lesson: null, goal: null });
+  assert.strictEqual(plain.max_tokens, 220);
+  assert.strictEqual(plain.reasoning_effort, undefined);
+  const reasoning = requestBody({ model: 'openai/gpt-oss-20b', question: 'hi', lesson: null, goal: null });
+  assert.strictEqual(reasoning.max_tokens, 1200);
+  assert.strictEqual(reasoning.reasoning_effort, 'low');
 });
