@@ -48,20 +48,22 @@ export default function PiggyBank() {
 
   const total = goals.reduce((s, g) => s + g.amount, 0);
 
-  const playSound = async () => {
-    try {
-      const file = soundType === 'Coin Collect'
-        ? require('../../assets/sounds/coin.mp3')
-        : require('../../assets/sounds/cash.mp3');
-      if (sound) await sound.unloadAsync();
-      // Loaded only when needed, so the screen still opens if the sound module is missing (e.g. in Expo Go)
-      const { Audio } = require('expo-av');
-      const { sound: newSound } = await Audio.Sound.createAsync(file);
-      await newSound.setVolumeAsync(volume / 100);
-      setSound(newSound);
-      await newSound.playAsync();
-    } catch { console.log('Sound file missing - check assets/sounds/'); }
-  };
+  const playSound = () => {
+  try {
+    const file = soundType === 'Coin Collect'
+      ? require('../../assets/sounds/coin.mp3')
+      : require('../../assets/sounds/cash.mp3');
+    // Loaded only when needed, so the screen still opens if sound is not available
+    const { createAudioPlayer } = require('expo-audio');
+    if (sound) sound.remove();
+    const player = createAudioPlayer(file);
+    player.volume = volume / 100;
+    player.play();
+    setSound(player);
+  } catch {
+    console.log('Sound not available');
+  }
+};
 
   // Circular Pie Chart - Donut
   const renderCircularPie = () => {
