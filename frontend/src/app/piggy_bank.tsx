@@ -48,22 +48,23 @@ export default function PiggyBank() {
 
   const total = goals.reduce((s, g) => s + g.amount, 0);
 
+  // Uses expo-audio (works in Expo Go). Loaded only when needed,
+  // so the screen still opens even if sound is not available.
   const playSound = () => {
-  try {
-    const file = soundType === 'Coin Collect'
-      ? require('../../assets/sounds/coin.mp3')
-      : require('../../assets/sounds/cash.mp3');
-    // Loaded only when needed, so the screen still opens if sound is not available
-    const { createAudioPlayer } = require('expo-audio');
-    if (sound) sound.remove();
-    const player = createAudioPlayer(file);
-    player.volume = volume / 100;
-    player.play();
-    setSound(player);
-  } catch {
-    console.log('Sound not available');
-  }
-};
+    try {
+      const file = soundType === 'Coin Collect'
+        ? require('../../assets/sounds/coin.mp3')
+        : require('../../assets/sounds/cash.mp3');
+      const { createAudioPlayer } = require('expo-audio');
+      if (sound) { try { sound.remove(); } catch { /* ignore */ } }
+      const player = createAudioPlayer(file);
+      player.volume = volume / 100;
+      player.play();
+      setSound(player);
+    } catch {
+      console.log('Sound not available - check assets/sounds/');
+    }
+  };
 
   // Circular Pie Chart - Donut
   const renderCircularPie = () => {
@@ -151,7 +152,7 @@ export default function PiggyBank() {
     setBusy(true);
     try {
       const r = await api(`/goals/${selectedGoalId}/contribute`, { method: 'POST', body: { amountPaise: Math.round(amt * 100) } });
-      await playSound();
+      playSound();
       setShowAdd(false);
       setAddAmount('50');
       await loadGoals();
@@ -270,6 +271,7 @@ export default function PiggyBank() {
         </View>
       </Modal>
 
+      {/* Settings */}
       <Modal visible={menuOpen} animationType="slide" transparent>
         <View style={s.modalBg}>
           <View style={s.modal}>
