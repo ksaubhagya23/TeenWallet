@@ -2,21 +2,9 @@ import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, FlatList, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 
-// --- BACKEND CONNECTION ---
-// Raat ko yaha apna backend URL daal dena. Abhi Supabase / Node dono se chalega.
-// Agar backend me data nahi hai to demo data dikhega, Empty nahi dikhega.
-const API_URL = 'https://YOUR-BACKEND.com/api';
+import { api, errorText } from '../lib/api';
 
 type Txn = { id: string, name: string, category: string, amount: number, type: 'spent' | 'saved', date: string, month: string, year: string };
-
-const DEMO_TXNS: Txn[] = [
-  { id: '1', name: 'Pocket Money - Mumma', category: 'Pocket Money', amount: 500, type: 'saved', date: '10-11-2026', month: 'November', year: '2026' },
-  { id: '2', name: 'Canteen - Samosa', category: 'Food', amount: -40, type: 'spent', date: '10-11-2026', month: 'November', year: '2026' },
-  { id: '3', name: 'Piggy - Cycle Goal', category: 'Saving', amount: -100, type: 'spent', date: '09-11-2026', month: 'November', year: '2026' },
-  { id: '4', name: 'Lesson Reward', category: 'Education', amount: 20, type: 'saved', date: '09-11-2026', month: 'November', year: '2026' },
-  { id: '5', name: 'Stationery Shop', category: 'Stationery', amount: -120, type: 'spent', date: '15-10-2026', month: 'October', year: '2026' },
-  { id: '6', name: 'Mock Invest Profit', category: 'Games', amount: 65, type: 'saved', date: '12-10-2026', month: 'October', year: '2026' },
-];
 
 // --- AUTO MONTH / YEAR ---
 const ALL_MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -27,11 +15,20 @@ const CURRENT_YEAR = NOW.getFullYear().toString(); // 2026
 // 2026 me = ['2025','2026'], 2027 me apne aap = ['2025','2026','2027']
 const YEARS = Array.from({ length: NOW.getFullYear() - 2024 }, (_, i) => (2025 + i).toString());
 
-const INITIAL_CATEGORIES = ['Food', 'Stationery', 'Games', 'Education', 'Saving', 'Pocket Money'];
+const INITIAL_CATEGORIES = ['Food', 'Games', 'Savings', 'Topup'];
+
+const BADGE_NAMES: Record<string, { title: string; sub: string }> = {
+  first_goal: { title: '🎯 First Goal', sub: 'Created your first savings goal' },
+  first_lesson: { title: '📘 First Lesson', sub: 'Passed your first quiz' },
+  all_lessons: { title: '🏆 Money Master', sub: 'Finished every lesson' },
+  goal_reached: { title: '🐷 Goal Reached', sub: 'Saved a full goal' },
+};
+const cap = (x: string) => (x ? x.charAt(0).toUpperCase() + x.slice(1) : x);
 
 export default function Transactions() {
   const router = useRouter();
-  const [txns, setTxns] = useState<Txn[]>(DEMO_TXNS);
+  const [txns, setTxns] = useState<Txn[]>([]);
+  const [loadError, setLoadError] = useState('');
   const [balance, setBalance] = useState<number | null>(null);
   const [showBalance, setShowBalance] = useState(false);
   const [vouchersOpen, setVouchersOpen] = useState(false);
@@ -52,18 +49,35 @@ export default function Transactions() {
   const [showAddCat, setShowAddCat] = useState(false);
   const [newCat, setNewCat] = useState('');
 
-  // 1. REAL FETCH FROM BACKEND - fail hoga to DEMO data rahega
+  // 1. REAL FETCH FROM BACKEND
   useEffect(() => {
-    fetch(`${API_URL}/transactions`).then(r => r.json()).then(d => { if (d?.length) setTxns(d) }).catch(() => {});
-    fetch(`${API_URL}/vouchers`).then(r => r.json()).then(setVouchers).catch(() => setVouchers([]));
+    (async () => {
+      try {
+        const [t, b] = await Promise.all([api('/transactions?limit=200'), api('/badges')]);
+        setTxns((t.transactions || []).map((x: any): Txn => {
+          const d = new Date(x.created_at);
+          const rs = x.amount_paise / 100;
+          const name = x.type === 'topup' ? 'Top-up from parent' : x.type === 'save' ? (x.merchant || 'Saved to goal') : `${cap(x.category || 'Spend')}${x.merchant ? ' - ' + x.merchant : ''}`;
+          return {
+            id: x.id, name, category: cap(x.category || (x.type === 'topup' ? 'topup' : 'other')), amount: rs,
+            type: rs >= 0 ? 'saved' : 'spent',
+            date: `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`,
+            month: ALL_MONTHS[d.getMonth()], year: String(d.getFullYear()),
+          };
+        }));
+        setVouchers((b.badges || []).map((x: any) => ({ id: x.code, ...(BADGE_NAMES[x.code] || { title: x.code, sub: 'Badge earned' }) })));
+      } catch (e) { setLoadError(errorText(e)); }
+    })();
   }, []);
 
-  // 2. CHECK BALANCE - Ek hi function, Eye + Button dono pe same
+  // 2. CHECK BALANCE - Eye + Button both use this
   const checkBalance = async () => {
     if (showBalance) { setShowBalance(false); return; }
-    const res = await fetch(`${API_URL}/balance`).then(r => r.json()).catch(() => ({ balance: 2450 }));
-    setBalance(res.balance);
-    setShowBalance(true);
+    try {
+      const w = await api('/wallet');
+      setBalance(w.balancePaise / 100);
+      setShowBalance(true);
+    } catch (e) { Alert.alert('Could not get balance', errorText(e)); }
   };
 
   // Clear All Filters - Sab reset + Current Month pe wapas
@@ -124,11 +138,7 @@ export default function Transactions() {
 
   const months = [...new Set(filtered.map(t => `${t.month} ${t.year}`))];
 
-  const voucherList = vouchers.length > 0 ? [...vouchers, ...vouchers, ...vouchers] : [
-    { id: '1', title: '₹50 OFF', sub: 'On Food Order' },
-    { id: '2', title: '₹100 OFF', sub: 'On Stationery' },
-    { id: '3', title: '20 XP', sub: 'On Saving' },
-  ];
+  const voucherList = vouchers;
 
   return (
     <View style={s.container}>
@@ -155,9 +165,9 @@ export default function Transactions() {
 
           {/* VOUCHERS CARD */}
           <TouchableOpacity style={[s.accountCard, { backgroundColor: '#002E6E' }]} onPress={() => setVouchersOpen(!vouchersOpen)}>
-            <Text style={s.voucherTitle}>Vouchers</Text>
-            <Text style={s.voucherTitle}>&</Text>
-            <Text style={s.voucherTitle}>Rewards</Text>
+            <Text style={s.voucherTitle}>My</Text>
+            <Text style={s.voucherTitle}>Badges</Text>
+            <Text style={s.voucherTitle}>🏅</Text>
             <Text style={{ color: '#FFD93D', textAlign: 'center', fontSize: 11, marginTop: 4 }}>{vouchersOpen ? '▲ Close' : '▼ View All'}</Text>
           </TouchableOpacity>
         </View>
@@ -165,7 +175,7 @@ export default function Transactions() {
         {/* VOUCHERS DROPDOWN */}
         {vouchersOpen && (
           <View style={s.voucherDrop}>
-            <Text style={s.voucherDropTitle}>Your Vouchers - Swipe →</Text>
+            <Text style={s.voucherDropTitle}>{voucherList.length ? 'Your Badges - Swipe →' : 'No badges yet. Finish a lesson or create a goal!'}</Text>
             <FlatList
               horizontal
               showsHorizontalScrollIndicator={false}
@@ -175,7 +185,6 @@ export default function Transactions() {
                 <View style={s.voucherItem}>
                   <Text style={s.voucherItemTitle}>{item.title}</Text>
                   <Text style={s.voucherItemSub}>{item.sub}</Text>
-                  <Text style={s.voucherClaim}>Claim →</Text>
                 </View>
               )}
             />
@@ -184,7 +193,8 @@ export default function Transactions() {
 
         {/* AI SUMMARY */}
         <View style={s.aiCard}>
-          <Text style={s.aiTitle}>✨ AI Insights - This Month</Text>
+          <Text style={s.aiTitle}>✨ Spending Insights</Text>
+          {loadError ? <Text style={s.aiText}>{loadError}</Text> : null}
           {aiSummary.length === 0 ? <Text style={s.aiText}>No spending yet. AI will categorize here.</Text> :
             aiSummary.map(([cat, amt]: any) => (
               <Text key={cat} style={s.aiText}>• You spent ₹{amt} on {cat} this month</Text>

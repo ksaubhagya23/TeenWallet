@@ -1,31 +1,9 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useState } from 'react';
 import { ActivityIndicator, Pressable, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import WarliBackground from "../components/WarliBackground";
 
-// ===== YAHIN PE BACKEND KA LOGIC HAI, KOI NAYI FILE NAHI =====
-const API_URL = 'http://192.168.1.5:5000/api'; // Wahi IP jo Signup me daala tha
-const DEMO_EMAIL = 'demo@test.com';
-const DEMO_PASSWORD = 'Demo@123';
-
-async function apiCall(endpoint: string, body: any, token?: string) {
-  try {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 5000);
-    const res = await fetch(`${API_URL}${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify(body),
-      signal: controller.signal,
-    });
-    clearTimeout(timeout);
-    const data = await res.json();
-    return { success: true, data, isDemo: false };
-  } catch (e) {
-    return { success: false, data: null, isDemo: true };
-  }
-}
+import { api, errorText, saveSession } from '../lib/api';
 
 export default function ParentLogin() {
   const router = useRouter();
@@ -38,42 +16,27 @@ export default function ParentLogin() {
 
   const handleLogin = async () => {
     if (!email || !password) {
-      alert('Please enter Mobile / Email and Password');
+      alert('Please enter your email and password');
       return;
     }
-
+    if (!email.includes('@')) {
+      alert('Please log in with your email address');
+      return;
+    }
     setLoading(true);
-    const isEmail = email.includes('@');
-    const result = await apiCall('/auth/login', {
-      email: isEmail ? email : undefined,
-      phone: !isEmail ? email : undefined,
-      password,
-      role: 'parent',
-    });
-    setLoading(false);
-
-    // 1. Real Backend - Login success
-    if (!result.isDemo && result.data?.token) {
-      await AsyncStorage.setItem('token', result.data.token);
-      await AsyncStorage.setItem('user', JSON.stringify(result.data.user || { name: email, role: 'parent' }));
+    try {
+      const data = await api('/auth/login', { method: 'POST', token: null, body: { email: email.trim(), password } });
+      if (data.user.role !== 'parent') {
+        alert('This is a teen account. Please use Teen Login.');
+        return;
+      }
+      await saveSession(data.token, data.user);
       router.replace({ pathname: '/parent-dashboard', params: { lang } });
-      return;
+    } catch (e) {
+      alert(errorText(e));
+    } finally {
+      setLoading(false);
     }
-
-    // 2. Demo Mode - Backend off hai
-    if (result.isDemo) {
-      // Demo me koi bhi password chalega, bas khali nahi hona chahiye
-      // Agar tu chahe to sirf demo@test.com / Demo@123 se hi login kara sakti hai, to neeche wali if uncomment kar de
-      // if (email === DEMO_EMAIL && password === DEMO_PASSWORD) { ... }
-      await AsyncStorage.setItem('token', 'demo-token');
-      await AsyncStorage.setItem('user', JSON.stringify({ name: email, role: 'parent', isDemo: true }));
-      alert(`DEMO MODE: Backend is off\nLogin done!`);
-      router.replace({ pathname: '/parent-dashboard', params: { lang } });
-      return;
-    }
-
-    // 3. Real Backend ne mana kar diya - Galat password
-    alert(result.data?.message || 'Wrong Mobile / Email or Password');
   };
 
   return (
@@ -82,10 +45,10 @@ export default function ParentLogin() {
       <Text style={styles.heading}>Parent Login</Text>
       <Text style={styles.sub}>Manage your teen's account</Text>
 
-      <Text style={styles.label}>Mobile Number or Email</Text>
+      <Text style={styles.label}>Email</Text>
       <TextInput
         style={[styles.input, focused === 'email' && styles.inputActive]}
-        placeholder="Enter Mobile / Email"
+        placeholder="Enter your email"
         value={email}
         onChangeText={setEmail}
         autoCapitalize="none"
@@ -109,7 +72,6 @@ export default function ParentLogin() {
           <Text style={styles.eyeText}>{showPass ? '👁️' : '🙈'}</Text>
         </Pressable>
       </View>
-      <Text style={styles.demoHint}>Enter anything for DEMO - Backend is off so login will be done</Text>
 
       <TouchableOpacity style={[styles.btn, loading && styles.btnDisabled]} onPress={handleLogin} disabled={loading}>
         {loading ? <ActivityIndicator color="#0A235A" /> : <Text style={styles.btnText}>Login</Text>}

@@ -4,9 +4,10 @@ import { useEffect, useState } from 'react';
 import { Alert, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 
-const API_URL = 'https://YOUR-BACKEND.com/api';
+import { api, errorText } from '../lib/api';
 
-type Goal = { id: string, name: string, amount: number, color: string, emoji: string };
+// amount = rupees saved so far, target = rupees needed (backend sends paise)
+type Goal = { id: string, name: string, amount: number, target: number, color: string, emoji: string };
 
 const COLORS = ['#FFC93C', '#4D96FF', '#6BCB77', '#FF6B9D', '#B983FF', '#FF9F45'];
 const EMOJIS = ['🚨', '🚲', '✈️', '🎧', '🎮', '📱', '🐷', '📚'];
@@ -31,20 +32,20 @@ export default function PiggyBank() {
   const [catEmoji, setCatEmoji] = useState('🐷');
   const [catColor, setCatColor] = useState(COLORS[0]);
 
-  useEffect(() => {
-    fetch(`${API_URL}/savings`)
-      .then(r => r.json())
-      .then((d) => {
-        if (Array.isArray(d) && d.length) {
-          setGoals(d.map((g: any, i: number) => ({ ...g, emoji: g.emoji || EMOJIS[i % EMOJIS.length] })));
-        } else throw new Error('empty');
-      })
-      .catch(() => setGoals([
-        { id: '1', name: 'Emergency', amount: 1200, color: '#FFC93C', emoji: '🚨' },
-        { id: '2', name: 'Cycle', amount: 800, color: '#4D96FF', emoji: '🚲' },
-        { id: '3', name: 'Trip', amount: 500, color: '#6BCB77', emoji: '✈️' },
-      ]));
-  }, []);
+  const [busy, setBusy] = useState(false);
+  const [catTarget, setCatTarget] = useState('500');
+
+  const loadGoals = async () => {
+    try {
+      const r = await api('/goals');
+      setGoals((r.goals || []).map((g: any, i: number) => ({
+        id: g.id, name: g.title, amount: g.savedPaise / 100, target: g.targetPaise / 100,
+        color: COLORS[i % COLORS.length], emoji: EMOJIS[i % EMOJIS.length],
+      })));
+    } catch (e) { Alert.alert('Could not load goals', errorText(e)); }
+  };
+
+  useEffect(() => { loadGoals(); }, []);
 
   const total = goals.reduce((s, g) => s + g.amount, 0);
 
@@ -113,6 +114,7 @@ export default function PiggyBank() {
     setCatName('');
     setCatEmoji('🐷');
     setCatColor(COLORS[goals.length % COLORS.length]);
+    setCatTarget('500');
     setShowCatModal(true);
   };
 
@@ -124,38 +126,35 @@ export default function PiggyBank() {
     setShowCatModal(true);
   };
 
-  const saveCategory = () => {
-    if (!catName.trim()) { Alert.alert('Error', 'Please enter category name'); return; }
-    if (editingId) {
-      setGoals(goals.map(g => g.id === editingId ? { ...g, name: catName.trim(), emoji: catEmoji, color: catColor } : g));
-    } else {
-      setGoals([...goals, { id: Date.now().toString(), name: catName.trim(), emoji: catEmoji, color: catColor, amount: 0 }]);
-    }
-    setShowCatModal(false);
+  // Creates a real savings goal on the server
+  const saveCategory = async () => {
+    const target = Number(catTarget);
+    if (!catName.trim()) { Alert.alert('Error', 'Please enter a goal name'); return; }
+    if (!Number.isFinite(target) || target < 1) { Alert.alert('Error', 'Enter the target amount in rupees (at least 1)'); return; }
+    setBusy(true);
+    try {
+      await api('/goals', { method: 'POST', body: { title: catName.trim(), targetPaise: Math.round(target * 100) } });
+      setShowCatModal(false);
+      await loadGoals();
+    } catch (e) { Alert.alert('Could not create goal', errorText(e)); }
+    finally { setBusy(false); }
   };
 
-  const removeCategory = (id: string) => {
-    const g = goals.find(x => x.id === id);
-    Alert.alert('Remove Category', `Remove ${g?.name}? Its savings will also be removed.`, [
-      { text: 'Cancel' },
-      { text: 'Remove', style: 'destructive', onPress: () => setGoals(goals.filter(x => x.id !== id)) },
-    ]);
-  };
-
+  // Moves money from the wallet into the goal (server checks balance)
   const confirmAddToSavings = async () => {
-    const amt = parseInt(addAmount) || 0;
-    if (!selectedGoalId) { Alert.alert('Select Category', 'Please select a category first'); return; }
+    const amt = Number(addAmount) || 0;
+    if (!selectedGoalId) { Alert.alert('Select Goal', 'Please select a goal first'); return; }
     if (amt <= 0) { Alert.alert('Enter Amount', 'Please enter a valid amount'); return; }
-    await playSound();
-    setGoals(goals.map(g => g.id === selectedGoalId ? { ...g, amount: g.amount + amt } : g));
-    setShowAdd(false);
-    setAddAmount('50');
-    Alert.alert('Saved!', `₹${amt} added to ${goals.find(g => g.id === selectedGoalId)?.name}`);
-    fetch(`${API_URL}/savings`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: goals.find(g => g.id === selectedGoalId)?.name, amount: amt }),
-    }).catch(() => {});
+    setBusy(true);
+    try {
+      const r = await api(`/goals/${selectedGoalId}/contribute`, { method: 'POST', body: { amountPaise: Math.round(amt * 100) } });
+      await playSound();
+      setShowAdd(false);
+      setAddAmount('50');
+      await loadGoals();
+      Alert.alert('Saved!', `₹${amt} added. Wallet balance now ₹${r.balancePaise / 100}.${r.newBadges?.length ? ' 🏅 Goal reached!' : ''}`);
+    } catch (e) { Alert.alert('Could not save', errorText(e)); }
+    finally { setBusy(false); }
   };
 
   return (
@@ -181,14 +180,12 @@ export default function PiggyBank() {
             <TouchableOpacity onPress={openAddCategory} style={s.addCatBtn}><Text style={s.addCatText}>+ Add Category</Text></TouchableOpacity>
           </View>
 
-          {goals.length === 0 && <Text style={s.catLine}>No goals yet. Add from backend.</Text>}
+          {goals.length === 0 && <Text style={s.catLine}>No goals yet. Tap + Add Category to make one.</Text>}
           {goals.map(g => (
             <View key={g.id} style={s.catRow}>
               <View style={[s.dot, { backgroundColor: g.color }]} />
-              <Text style={s.catLine}>{g.emoji} {g.name} = ₹{g.amount}</Text>
+              <Text style={s.catLine}>{g.emoji} {g.name} = ₹{g.amount} / ₹{g.target}</Text>
               <Text style={s.catPerc}>{total ? Math.round((g.amount / total) * 100) : 0}%</Text>
-              <TouchableOpacity onPress={() => openEditCategory(g)} style={s.iconBtn}><Text style={{ fontSize: 15 }}>✏️</Text></TouchableOpacity>
-              <TouchableOpacity onPress={() => removeCategory(g.id)} style={s.iconBtn}><Text style={{ fontSize: 15 }}>🗑️</Text></TouchableOpacity>
             </View>
           ))}
 
@@ -234,7 +231,7 @@ export default function PiggyBank() {
                 </TouchableOpacity>
               ))}
             </View>
-            <TouchableOpacity style={s.saveBtn} onPress={confirmAddToSavings}><Text style={{ color: '#fff', fontWeight: '900' }}>Add ₹{addAmount || 0} to Savings</Text></TouchableOpacity>
+            <TouchableOpacity style={s.saveBtn} onPress={confirmAddToSavings} disabled={busy}><Text style={{ color: '#fff', fontWeight: '900' }}>Add ₹{addAmount || 0} to Savings</Text></TouchableOpacity>
           </View>
         </View>
       </Modal>
@@ -244,11 +241,13 @@ export default function PiggyBank() {
         <View style={s.modalBg}>
           <View style={s.modal}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-              <Text style={s.modalTitle}>{editingId ? 'Edit Category' : 'Add Category'}</Text>
+              <Text style={s.modalTitle}>New Savings Goal</Text>
               <TouchableOpacity onPress={() => setShowCatModal(false)}><Text style={{ fontSize: 20 }}>✕</Text></TouchableOpacity>
             </View>
             <Text style={{ color: '#666', fontWeight: '700', marginTop: 12 }}>Category Name</Text>
             <TextInput style={s.input} value={catName} onChangeText={setCatName} placeholder="e.g. Cycle, Headphones, Emergency" autoFocus />
+            <Text style={{ color: '#666', fontWeight: '700', marginTop: 12 }}>Target (₹)</Text>
+            <TextInput style={s.input} value={catTarget} onChangeText={setCatTarget} keyboardType="numeric" placeholder="e.g. 2000" />
             <Text style={{ color: '#666', fontWeight: '700', marginTop: 12 }}>Emoji</Text>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginTop: 8 }}>
               {EMOJIS.map(e => (
@@ -263,7 +262,7 @@ export default function PiggyBank() {
                 <TouchableOpacity key={c} onPress={() => setCatColor(c)} style={[s.colorBtn, { backgroundColor: c, borderWidth: catColor === c ? 3 : 0, borderColor: '#3B1F5E' }]} />
               ))}
             </View>
-            <TouchableOpacity style={s.saveBtn} onPress={saveCategory}><Text style={{ color: '#fff', fontWeight: '900' }}>{editingId ? 'Save Changes' : 'Add Category'}</Text></TouchableOpacity>
+            <TouchableOpacity style={s.saveBtn} onPress={saveCategory} disabled={busy}><Text style={{ color: '#fff', fontWeight: '900' }}>Create Goal</Text></TouchableOpacity>
           </View>
         </View>
       </Modal>

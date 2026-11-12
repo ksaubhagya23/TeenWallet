@@ -1,9 +1,10 @@
-// app/lessons.tsx - TeenWallet Lessons - BLUE THEME LOCKED
+// app/lessons.tsx - TeenWallet Lessons - connected to the live backend (lessons, quizzes, AI tutor)
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
-import { Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Alert, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { api, ApiError, clearSession, errorText } from '../lib/api';
 
-// COLORS - LOCKED BLUE COMBO - kabhi change mat karna
+// COLORS - LOCKED BLUE COMBO
 const C = {
   bg: '#F0F6FF',
   deep: '#1E3A8A',
@@ -18,61 +19,98 @@ const C = {
   red: '#E53935',
 };
 
-type Lesson = {
-  id: string;
-  title: string;
-  category: string;
-  xp: number;
-  duration: string;
-  desc: string;
-  icon: string;
-  locked: boolean;
-  done: boolean;
-};
+type LessonRow = { id: string; title: string; topic: string | null; completed: boolean; quizScore: number | null };
+type Question = { index: number; q: string; options: string[] };
+type Detail = { id: string; title: string; topic: string | null; body: string; questions: Question[] };
+type Graded = { score: number; total: number; percent: number; passed: boolean; results: { index: number; correct: boolean; correctIndex: number; explain: string | null }[]; newBadges: string[] };
 
-// MOCK DATA - Baad me backend se aayega
-const MOCK_LESSONS: Lesson[] = [
-  { id: '1', title: 'What is Money?', category: 'Money Basics', xp: 20, duration: '5 min', desc: 'Learn the basics of money & why it matters', icon: '💰', locked: false, done: true },
-  { id: '2', title: 'Saving Smarter', category: 'Saving', xp: 15, duration: '6 min', desc: 'How to save money each week', icon: '🐷', locked: false, done: false },
-  { id: '3', title: 'Reading Charts', category: 'Money Basics', xp: 20, duration: '4 min', desc: 'Understand spending charts & trends', icon: '📊', locked: true, done: false },
-  { id: '4', title: 'Building a Budget', category: 'Budgeting', xp: 25, duration: '7 min', desc: 'Create your first simple budget', icon: '📝', locked: true, done: false },
-  { id: '5', title: 'Scam Safety', category: 'Scam Safety', xp: 30, duration: '5 min', desc: 'How to spot fake links & scams', icon: '🛡️', locked: true, done: false },
-  { id: '6', title: 'Investing Basics', category: 'Investing', xp: 30, duration: '8 min', desc: 'What is investing for teens?', icon: '📈', locked: true, done: false },
-];
+const ICONS: Record<string, string> = { saving: '🐷', budget: '📝', scam: '🛡️', invest: '📈', money: '💰' };
+const iconFor = (l: LessonRow) => {
+  const t = `${l.topic || ''} ${l.title}`.toLowerCase();
+  const k = Object.keys(ICONS).find(x => t.includes(x));
+  return k ? ICONS[k] : '📘';
+};
 
 export default function Lessons() {
   const router = useRouter();
-  const [lessons, setLessons] = useState(MOCK_LESSONS);
+  const [lessons, setLessons] = useState<LessonRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState('');
   const [search, setSearch] = useState('');
   const [cat, setCat] = useState('All');
-  const [selected, setSelected] = useState<Lesson | null>(null);
-  const [quizAns, setQuizAns] = useState<number | null>(null);
+  const [detail, setDetail] = useState<Detail | null>(null);
+  const [opening, setOpening] = useState(false);
+  const [answers, setAnswers] = useState<(number | null)[]>([]);
+  const [graded, setGraded] = useState<Graded | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  // Elastic Search - abhi local filter, baad me /api/elastic/search?q=
+  // AI tutor
+  const [question, setQuestion] = useState('');
+  const [asking, setAsking] = useState(false);
+  const [reply, setReply] = useState<{ answer: string; source: string; model?: string } | null>(null);
+
+  const load = useCallback(async () => {
+    setLoadError('');
+    try {
+      const r = await api('/lessons');
+      setLessons(r.lessons || []);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) { await clearSession(); router.replace('/'); return; }
+      setLoadError(errorText(e));
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const categories = useMemo(() => ['All', ...Array.from(new Set(lessons.map(l => l.topic).filter(Boolean) as string[]))], [lessons]);
+
   const filtered = useMemo(() => {
     let list = lessons;
-    if (cat !== 'All') list = list.filter(l => l.category === cat);
-    if (search) list = list.filter(l => (l.title + l.category).toLowerCase().includes(search.toLowerCase()));
+    if (cat !== 'All') list = list.filter(l => l.topic === cat);
+    if (search) list = list.filter(l => `${l.title} ${l.topic || ''}`.toLowerCase().includes(search.toLowerCase()));
     return list;
   }, [lessons, search, cat]);
 
-  const totalXP = lessons.filter(l => l.done).reduce((s, l) => s + l.xp, 0);
-  const doneCount = lessons.filter(l => l.done).length;
+  const doneCount = lessons.filter(l => l.completed).length;
+  const recommended = lessons.find(l => !l.completed) || lessons[0];
 
-  const completeLesson = (id: string) => {
-    setLessons(prev => prev.map(l => {
-      if (l.id === id) return { ...l, done: true };
-      // Next lesson unlock
-      const idx = prev.findIndex(x => x.id === id);
-      if (prev.indexOf(l) === idx + 1) return { ...l, locked: false };
-      return l;
-    }));
-    setSelected(null);
-    setQuizAns(null);
+  const openLesson = async (id: string) => {
+    setOpening(true);
+    try {
+      const d: Detail = await api(`/lessons/${id}`);
+      setDetail(d); setAnswers(d.questions.map(() => null)); setGraded(null);
+    } catch (e) { Alert.alert('Could not open lesson', errorText(e)); }
+    finally { setOpening(false); }
   };
 
-  const categories = ['All', 'Money Basics', 'Saving', 'Budgeting', 'Scam Safety', 'Investing'];
-  const recommended = lessons.find(l => !l.done && !l.locked) || lessons[0];
+  const closeLesson = () => { setDetail(null); setAnswers([]); setGraded(null); };
+
+  const submitQuiz = async () => {
+    if (!detail) return;
+    if (answers.some(a => a === null)) { Alert.alert('Answer every question first'); return; }
+    setSubmitting(true);
+    try {
+      const g: Graded = await api(`/lessons/${detail.id}/quiz`, { method: 'POST', body: { answers } });
+      setGraded(g);
+      if (g.passed) load();
+    } catch (e) { Alert.alert('Could not submit', errorText(e)); }
+    finally { setSubmitting(false); }
+  };
+
+  const askTutor = async () => {
+    const q = question.trim();
+    if (q.length < 3) return;
+    setAsking(true); setReply(null);
+    try {
+      const r = await api('/ai/ask', { method: 'POST', body: { question: q }, timeoutMs: 90000 });
+      setReply({ answer: r.answer, source: r.source, model: r.model });
+    } catch (e) { Alert.alert('The tutor could not answer', errorText(e)); }
+    finally { setAsking(false); }
+  };
+
+  if (loading) {
+    return <View style={[s.container, { alignItems: 'center', justifyContent: 'center' }]}><ActivityIndicator size="large" color={C.blue} /><Text style={{ color: C.grey, marginTop: 10 }}>Loading lessons...</Text></View>;
+  }
 
   return (
     <View style={s.container}>
@@ -81,30 +119,53 @@ export default function Lessons() {
         <TouchableOpacity onPress={() => router.back()}><Text style={s.back}>←</Text></TouchableOpacity>
         <Text style={s.headerTitle}>Lessons</Text>
         <View style={s.headerRight}>
-          <View style={s.streakPill}><Text style={s.streakText}>🔥 5 days</Text></View>
-          <View style={s.xpPill}><Text style={s.xpText}>⭐ {totalXP} XP</Text></View>
+          <View style={s.xpPill}><Text style={s.xpText}>✅ {doneCount}/{lessons.length}</Text></View>
         </View>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false}>
-        {/* AI FOR YOU - Astropod */}
+        {/* MONEY TUTOR - AI answers from the lessons */}
         <View style={s.aiCard}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
             <Text style={{ fontSize: 26 }}>🤖</Text>
-            <Text style={s.aiTitle}>AI For You</Text>
+            <Text style={s.aiTitle}>Ask the Money Tutor</Text>
           </View>
-          <Text style={s.aiSub}>Daily lesson picked for you — {recommended.title}</Text>
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 12 }}>
-            <Text style={s.aiSmall}>{recommended.category} • {recommended.duration} • +{recommended.xp} XP</Text>
-            <TouchableOpacity style={s.aiBtn} onPress={() => setSelected(recommended)}>
-              <Text style={s.aiBtnText}>Start Now</Text>
+          <Text style={s.aiSub}>Ask anything about saving, budgeting or scams.</Text>
+          <View style={{ flexDirection: 'row', gap: 8, marginTop: 12 }}>
+            <TextInput placeholder="e.g. How do I save for a phone?" value={question} onChangeText={setQuestion} style={s.aiInput} placeholderTextColor="#7A8BB0" editable={!asking} onSubmitEditing={askTutor} returnKeyType="send" />
+            <TouchableOpacity style={[s.askBtn, asking && { opacity: 0.6 }]} onPress={askTutor} disabled={asking}>
+              {asking ? <ActivityIndicator color={C.text} /> : <Text style={{ fontWeight: '900', color: C.text }}>Ask</Text>}
             </TouchableOpacity>
           </View>
-          <View style={s.searchInside}>
-            <Text>🔍</Text>
-            <TextInput placeholder="Search lessons..." value={search} onChangeText={setSearch} style={s.searchInput} placeholderTextColor="#7A8BB0" />
-          </View>
+          {reply && (
+            <View style={s.answerBox}>
+              <Text style={s.answerText}>{reply.answer}</Text>
+              <Text style={s.answerMeta}>{reply.source === 'ai' ? `AI answer${reply.model ? ' • ' + reply.model : ''}` : 'From the lessons'}</Text>
+            </View>
+          )}
         </View>
+
+        {loadError ? (
+          <View style={[s.lessonCard, { flexDirection: 'column', alignItems: 'flex-start' }]}>
+            <Text style={s.lessonTitle}>Could not load lessons</Text>
+            <Text style={s.lessonDesc}>{loadError}</Text>
+            <TouchableOpacity style={[s.aiBtn, { marginTop: 10 }]} onPress={() => { setLoading(true); load(); }}><Text style={s.aiBtnText}>Try again</Text></TouchableOpacity>
+          </View>
+        ) : (<>
+        <View style={s.searchInside2}>
+          <Text>🔍</Text>
+          <TextInput placeholder="Search lessons..." value={search} onChangeText={setSearch} style={s.searchInput} placeholderTextColor="#7A8BB0" />
+        </View>
+
+        {recommended && (
+          <TouchableOpacity style={[s.lessonCard, { borderWidth: 2, borderColor: C.gold }]} onPress={() => openLesson(recommended.id)}>
+            <View style={[s.iconBox, { backgroundColor: C.lightBlue }]}><Text style={{ fontSize: 24 }}>⭐</Text></View>
+            <View style={{ flex: 1, marginLeft: 12 }}>
+              <Text style={s.lessonTitle}>Up next: {recommended.title}</Text>
+              <Text style={s.lessonDesc}>Tap to start</Text>
+            </View>
+          </TouchableOpacity>
+        )}
 
         {/* CATEGORY CHIPS */}
         <ScrollView horizontal showsHorizontalScrollIndicator={false} style={s.chipScroll}>
@@ -119,50 +180,67 @@ export default function Lessons() {
 
         {/* LESSON LIST */}
         {filtered.map(l => (
-          <TouchableOpacity key={l.id} style={[s.lessonCard, l.locked && { opacity: 0.7 }]} onPress={() => !l.locked && setSelected(l)}>
-            <View style={[s.iconBox, { backgroundColor: l.locked ? '#E5EAF3' : C.lightBlue }]}>
-              <Text style={{ fontSize: 24 }}>{l.locked ? '🔒' : l.icon}</Text>
+          <TouchableOpacity key={l.id} style={s.lessonCard} onPress={() => openLesson(l.id)} disabled={opening}>
+            <View style={[s.iconBox, { backgroundColor: C.lightBlue }]}>
+              <Text style={{ fontSize: 24 }}>{iconFor(l)}</Text>
             </View>
             <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={s.lessonTitle}>{l.title} {l.done ? '✅' : ''}</Text>
-              <Text style={s.lessonSub}>{l.category} • {l.duration} {l.locked ? '• Locked' : ''}</Text>
-              <Text style={s.lessonDesc}>{l.desc}</Text>
-            </View>
-            <View style={[s.xpBadge, { backgroundColor: l.locked ? '#FFF3CD' : C.gold }]}>
-              <Text style={s.xpBadgeText}>{l.locked ? `🔒 ${l.xp} XP` : `⭐ ${l.xp} XP`}</Text>
+              <Text style={s.lessonTitle}>{l.title} {l.completed ? '✅' : ''}</Text>
+              <Text style={s.lessonSub}>{l.topic || 'Money'}{l.quizScore !== null && l.quizScore !== undefined ? ` • best score ${l.quizScore}` : ''}</Text>
             </View>
           </TouchableOpacity>
         ))}
+        {filtered.length === 0 && <Text style={[s.lessonDesc, { marginHorizontal: 16, marginTop: 14 }]}>No lessons found.</Text>}
+        </>)}
         <View style={{ height: 30 }} />
       </ScrollView>
 
       {/* LESSON DETAIL + QUIZ MODAL */}
-      <Modal visible={!!selected} animationType="slide" transparent>
+      <Modal visible={!!detail} animationType="slide" transparent onRequestClose={closeLesson}>
         <View style={s.modalBg}>
           <View style={s.modal}>
             <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-              <Text style={s.modalTitle}>{selected?.title}</Text>
-              <TouchableOpacity onPress={() => { setSelected(null); setQuizAns(null); }}><Text style={{ fontSize: 20 }}>✕</Text></TouchableOpacity>
+              <Text style={s.modalTitle}>{detail?.title}</Text>
+              <TouchableOpacity onPress={closeLesson}><Text style={{ fontSize: 20 }}>✕</Text></TouchableOpacity>
             </View>
-            <Text style={s.modalSub}>{selected?.category} • {selected?.duration} • AI Generated by Astropod</Text>
-            <Text style={s.lessonBody}>
-              {selected?.category === 'Saving'
-                ? 'If you save ₹50 every week, in 10 weeks you will have ₹500. Small savings become big money. Always save first, then spend.'
-                : 'Money is a tool. Learn to save, spend smartly and stay safe from scams. Complete this lesson to earn XP and unlock next level.'}
-            </Text>
+            <Text style={s.modalSub}>{detail?.topic || 'Money'}</Text>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              <Text style={s.lessonBody}>{detail?.body}</Text>
 
-            <Text style={s.quizTitle}>Quick Quiz - What is the best habit?</Text>
-            {['Save first, then spend', 'Spend all, then save', 'Never save'].map((opt, i) => (
-              <TouchableOpacity key={opt} onPress={() => setQuizAns(i)} style={[s.quizOpt, quizAns === i && s.quizOptActive]}>
-                <Text style={[s.quizOptText, quizAns === i && { color: '#fff' }]}>{opt}</Text>
-              </TouchableOpacity>
-            ))}
-            {quizAns === 0 && <Text style={s.correct}>Correct! +{selected?.xp} XP earned 🎉</Text>}
-            {quizAns !== null && quizAns !== 0 && <Text style={s.wrong}>Not quite. Try again - Hint: Save first!</Text>}
+              {detail && detail.questions.length > 0 && <Text style={s.quizTitle}>Quick Quiz</Text>}
+              {detail?.questions.map((q, qi) => (
+                <View key={q.index} style={{ marginTop: 10 }}>
+                  <Text style={{ fontWeight: '800', color: C.text }}>{qi + 1}. {q.q}</Text>
+                  {q.options.map((opt, oi) => {
+                    const r = graded?.results[qi];
+                    const isChosen = answers[qi] === oi;
+                    const bg = r ? (oi === r.correctIndex ? '#DFF5E8' : isChosen ? '#FDE2E1' : undefined) : undefined;
+                    return (
+                      <TouchableOpacity key={oi} disabled={!!graded} onPress={() => setAnswers(a => a.map((x, i) => (i === qi ? oi : x)))} style={[s.quizOpt, isChosen && !graded && s.quizOptActive, bg ? { backgroundColor: bg } : null]}>
+                        <Text style={[s.quizOptText, isChosen && !graded && { color: '#fff' }]}>{opt}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                  {graded?.results[qi]?.explain ? <Text style={s.explain}>{graded.results[qi].explain}</Text> : null}
+                </View>
+              ))}
 
-            <TouchableOpacity disabled={quizAns !== 0} style={[s.completeBtn, quizAns !== 0 && { opacity: 0.5 }]} onPress={() => selected && completeLesson(selected.id)}>
-              <Text style={{ color: '#fff', fontWeight: '900' }}>Complete Lesson</Text>
-            </TouchableOpacity>
+              {graded && (
+                <Text style={graded.passed ? s.correct : s.wrong}>
+                  {graded.passed ? `Passed! ${graded.score}/${graded.total} 🎉` : `${graded.score}/${graded.total} - you need 60% to pass. Close and try again.`}
+                  {graded.newBadges.length ? `  New badge: ${graded.newBadges.join(', ')}` : ''}
+                </Text>
+              )}
+
+              {!graded ? (
+                <TouchableOpacity disabled={submitting} style={[s.completeBtn, submitting && { opacity: 0.5 }]} onPress={submitQuiz}>
+                  <Text style={{ color: '#fff', fontWeight: '900' }}>{submitting ? 'Checking...' : 'Submit Quiz'}</Text>
+                </TouchableOpacity>
+              ) : (
+                <TouchableOpacity style={s.completeBtn} onPress={closeLesson}><Text style={{ color: '#fff', fontWeight: '900' }}>Done</Text></TouchableOpacity>
+              )}
+              <View style={{ height: 20 }} />
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -213,4 +291,12 @@ const s = StyleSheet.create({
   correct: { color: C.green, fontWeight: '800', marginTop: 10 },
   wrong: { color: C.red, fontWeight: '800', marginTop: 10 },
   completeBtn: { backgroundColor: C.deep, padding: 14, borderRadius: 12, alignItems: 'center', marginTop: 16 },
+
+  aiInput: { flex: 1, backgroundColor: '#EAF1FF', borderRadius: 12, paddingHorizontal: 12, height: 44, color: C.text, fontSize: 13 },
+  askBtn: { backgroundColor: C.gold, paddingHorizontal: 14, borderRadius: 12, alignItems: 'center', justifyContent: 'center', height: 44 },
+  answerBox: { backgroundColor: '#EAF1FF', borderRadius: 12, padding: 12, marginTop: 10 },
+  answerText: { color: C.text, fontSize: 13, lineHeight: 19 },
+  answerMeta: { color: C.grey, fontSize: 10, marginTop: 6 },
+  searchInside2: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 12, paddingHorizontal: 12, height: 44, marginHorizontal: 16, marginTop: 14 },
+  explain: { color: C.grey, fontSize: 12, marginTop: 4 },
 });

@@ -1,4 +1,3 @@
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useFonts } from 'expo-font';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
@@ -15,20 +14,19 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { api, ApiError, clearSession, errorText, getUser, rupees } from '../lib/api';
 
-// ===== LINK LOGIC - SIRF YE NAYA HAI, BAAKI SAB SAME HAI =====
-const API_URL = 'http://192.168.1.5:5000/api';
-async function apiCall(endpoint: string, body: any, token?: string) {
-  try {
-    const res = await fetch(`${API_URL}${endpoint}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json();
-    return { data, isDemo: false };
-  } catch (e) { return { data: null, isDemo: true }; }
-}
+// Money from the backend is in paise. The screen shows rupees.
+const toRs = (paise: number) => Number((paise / 100).toFixed(2));
+const CATEGORY_EMOJI: Record<string, string> = { food: '🍔', books: '📚', games: '🎮', shopping: '🛒', savings: '🐷', travel: '🚌' };
+const SPEND_COLORS = ['#3B82F6', '#34D399', '#FBBF24', '#F97316', '#A78BFA'];
+const BADGE_INFO: Record<string, { name: string; emoji: string }> = {
+  first_lesson: { name: 'First Lesson', emoji: '🧠' },
+  all_lessons: { name: 'Lesson Master', emoji: '🎓' },
+  first_goal: { name: 'Goal Setter', emoji: '🎯' },
+  goal_reached: { name: 'Goal Getter', emoji: '🏆' },
+};
+const cap = (t: string) => (t ? t.charAt(0).toUpperCase() + t.slice(1) : t);
 
 const DUMMY = {
   user: { name: 'Aarav', email: 'aarav@test.com', phone: '+91 98765 43210', gender: 'Male', lastLogin: 'Today, 9:15 AM • Delhi' },
@@ -98,6 +96,7 @@ export default function TeenDashboard() {
   const [loading, setLoading] = useState(true);
   const [wallet, setWallet] = useState<any>(DUMMY);
   const [payMsg, setPayMsg] = useState('');
+  const [loadError, setLoadError] = useState('');
   const [showProfile, setShowProfile] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showScanner, setShowScanner] = useState(false);
@@ -126,65 +125,117 @@ export default function TeenDashboard() {
   const [theme, setTheme] = useState('Dark');
   const [language, setLanguage] = useState('English');
 
+  // Loads everything for this teen from the backend and puts it into the screen's data.
+  const loadData = async () => {
+    try {
+      const me = await getUser();
+      const [w, tx, g, ls, bd] = await Promise.all([
+        api('/wallet'),
+        api('/transactions?limit=30'),
+        api('/goals'),
+        api('/lessons'),
+        api('/badges'),
+      ]);
+
+      const goals: any[] = g.goals || [];
+      const current = goals.find((x) => !x.reached) || goals[0];
+      const goal = current
+        ? { title: current.title, saved: toRs(current.savedPaise), target: toRs(current.targetPaise) }
+        : { title: 'No goal yet. Create one in Piggy Bank', saved: 0, target: 1 };
+      const savedTotal = goals.reduce((sum, x) => sum + x.savedPaise, 0);
+
+      const limit = toRs(w.dailyLimitPaise);
+      const spentToday = toRs(w.spentTodayPaise);
+      const rules = [
+        { category: 'Daily spending limit', status: `Limit ₹${limit}`, spent: spentToday, limit },
+        ...(w.blockedCategories as string[]).map((c) => ({ category: cap(c), status: 'Blocked', spent: 0, limit: null })),
+      ];
+
+      const lessons = (ls.lessons as any[]).map((l, i) => ({ id: i + 1, title: l.title, progress: l.completed ? 100 : 0 }));
+      const earned = new Set((bd.badges as any[]).map((b) => b.code));
+      const badges = Object.entries(BADGE_INFO).map(([code, info]) => ({ name: info.name, emoji: info.emoji, earned: earned.has(code) }));
+      // XP and level are worked out from lessons finished and badges earned.
+      const xp = (ls.completed as number) * 25 + earned.size * 10;
+
+      const entries: any[] = tx.transactions || [];
+      const transactions = entries.slice(0, 6).map((t) => {
+        const d = new Date(t.created_at);
+        return {
+          id: t.id,
+          emoji: t.type === 'topup' ? '💰' : CATEGORY_EMOJI[(t.category || '').toLowerCase()] || '💸',
+          name: t.type === 'topup' ? 'Wallet top-up' : t.merchant || cap(t.category || 'Payment'),
+          time: `${d.toLocaleDateString()} ${d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+          amount: toRs(t.amount_paise),
+        };
+      });
+
+      const byCategory: Record<string, number> = {};
+      entries.filter((t) => t.type === 'spend').forEach((t) => {
+        const c = cap((t.category || 'other').toLowerCase());
+        byCategory[c] = (byCategory[c] || 0) + Math.abs(t.amount_paise);
+      });
+      const totalSpent = Object.values(byCategory).reduce((a, b) => a + b, 0);
+      const spending = Object.entries(byCategory).map(([label, paise], i) => ({
+        label,
+        pct: totalSpent ? Math.round((paise / totalSpent) * 100) : 0,
+        color: SPEND_COLORS[i % SPEND_COLORS.length],
+        emoji: '●',
+        amount: toRs(paise),
+      }));
+
+      setWallet((prev: any) => ({
+        ...prev,
+        user: { name: me?.name || prev.user.name, email: me?.email || '', phone: '—', gender: '—', lastLogin: 'Just now' },
+        balance: toRs(w.balancePaise),
+        spent: spentToday,
+        saved: toRs(savedTotal),
+        invested: 0,
+        xp,
+        level: Math.floor(xp / 100) + 1,
+        monthlyBudget: { used: spentToday, total: limit },
+        goal,
+        rules,
+        lessons,
+        badges,
+        transactions,
+        spending,
+        totalSpentAmount: toRs(totalSpent),
+      }));
+      setLoadError('');
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        await clearSession();
+        router.replace('/');
+        return;
+      }
+      setLoadError(errorText(e));
+    }
+  };
+
   useEffect(() => {
     (async () => {
-      // Login wala naam uthao, DUMMY ko overwrite mat karo agar naam nahi mila to
-      const userStr = await AsyncStorage.getItem('user');
-      if (userStr) {
-        try {
-          const u = JSON.parse(userStr);
-          if (u.name) setWallet((prev: any) => ({ ...prev, user: { ...prev.user, name: u.name, email: u.email || prev.user.email } }));
-        } catch {}
-      }
-      // Pehle se linked hai kya? Check karo
-      const savedCode = await AsyncStorage.getItem('familyCode');
-      const savedParent = await AsyncStorage.getItem('linkedParent');
-      if (savedCode && savedParent) { setFamilyCode(savedCode); setLinkedParent(savedParent); }
-      setTimeout(() => setLoading(false), 500);
+      await loadData();
+      setLoading(false);
     })();
   }, []);
 
-  // ===== LINK FUNCTIONS - SIRF YE NAYE HAIN =====
-  const handleLinkParent = async () => {
-    if (!familyCode.trim()) { Alert.alert('Enter Code', 'Enter the Family Code from your Parent'); return; }
-    setLinkLoading(true);
-    const token = await AsyncStorage.getItem('token');
-    const result = await apiCall('/family/join', { familyCode: familyCode.trim().toUpperCase() }, token || undefined);
-    setLinkLoading(false);
-    if (!result.isDemo && result.data?.success === false) { Alert.alert('Wrong Code', result.data?.message || 'Ye code galat hai, Parent se dobara lo'); return; }
-    // Demo ya Success - dono me link kar do
-    const parentName = result.data?.parentName || 'Parent';
-    await AsyncStorage.setItem('familyCode', familyCode.trim().toUpperCase());
-    await AsyncStorage.setItem('linkedParent', parentName);
-    setLinkedParent(parentName);
-    Alert.alert('Linked! 🎉', result.isDemo ? `Demo Mode: Successfully Linked!\nCode: ${familyCode.trim().toUpperCase()}` : `Parent ${parentName} se link ho gaya!`);
-  };
-
-  const handleUnlink = async () => {
-    Alert.alert('Unlink Parent?', 'Kya Parent se unlink karna hai?', [
-      { text: 'Cancel' },
-      { text: 'Unlink', style: 'destructive', onPress: async () => {
-        await AsyncStorage.removeItem('familyCode');
-        await AsyncStorage.removeItem('linkedParent');
-        setLinkedParent(null); setFamilyCode('');
-      }},
-    ]);
-  };
-
-  const handlePay = (category: string, amount: number) => {
-    if (category === 'Online shopping') {
-      setPayMsg('Declined: Online shopping is blocked by parent');
-    } else if (category === 'Games') {
-      setPayMsg('Declined: Games limit of ₹500 exceeded');
-    } else {
-      setPayMsg('Approved! New Balance ₹' + (wallet.balance - amount));
+  // A real payment: the backend checks balance, daily limit and blocked categories.
+  const handlePay = async (category: string, amountRupees: number, merchant: string) => {
+    try {
+      const r = await api('/transactions', {
+        method: 'POST',
+        body: { amountPaise: Math.round(amountRupees * 100), category, merchant },
+      });
+      setPayMsg(r.approved ? `Approved! New balance ${rupees(r.balancePaise)}` : `Declined: ${r.message || r.reason}`);
+      await loadData();
+    } catch (e) {
+      setPayMsg(`Error: ${errorText(e)}`);
     }
   };
 
   const handleScanPay = () => {
     setShowScanner(false);
-    Alert.alert('PayPal Scan', 'QR scanned successfully.\n₹120 will be paid via PayPal.\nParent rules are being checked.');
-    setPayMsg('PayPal Scan: ₹120 paid! (Demo)');
+    handlePay('shopping', 120, 'QR merchant');
   };
 
   const openEdit = () => {
@@ -222,7 +273,7 @@ export default function TeenDashboard() {
   }
 
   const goalPct = Math.round((wallet.goal.saved / wallet.goal.target) * 100);
-  const budgetPct = Math.round((wallet.monthlyBudget.used / wallet.monthlyBudget.total) * 100);
+  const budgetPct = wallet.monthlyBudget.total > 0 ? Math.round((wallet.monthlyBudget.used / wallet.monthlyBudget.total) * 100) : 0;
 
   const getRuleStyle = (st: string) => {
     if (st === 'Allowed') return { backgroundColor: '#86EFAC', color: '#065F46' };
@@ -251,25 +302,15 @@ export default function TeenDashboard() {
           <Text style={s.subText}>Keep making smart moves!</Text>
         </View>
 
-        {/* ===== PARENT LINK CARD - SIRF YE NAYA CARD HAI, BAAKI SAB SAME ===== */}
+        {loadError !== '' ? (
+          <Text style={{ marginHorizontal: 18, marginTop: 10, fontWeight: '700', color: '#DC2626' }}>{loadError}</Text>
+        ) : null}
+
         <View style={s.whiteCard}>
           <Text style={s.cardTitle}>👨‍👩‍👧 Parent Link</Text>
-          {linkedParent ? (
-            <>
-              <Text style={{ color: '#166534', fontWeight: '700', marginTop: 6 }}>✅ Linked with {linkedParent} • Code: {familyCode}</Text>
-              <TouchableOpacity onPress={handleUnlink} style={{ marginTop: 10 }}><Text style={{ color: '#EF4444', fontWeight: '800' }}>Unlink Parent</Text></TouchableOpacity>
-            </>
-          ) : (
-            <>
-              <Text style={{ color: '#6B7280', marginTop: 4, fontSize: 13 }}>Enter the Family Code from your parent to link account </Text>
-              <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                <TextInput value={familyCode} onChangeText={(t) => setFamilyCode(t.toUpperCase())} placeholder="FAM-1234" autoCapitalize="characters" style={[s.input, { flex: 1, marginTop: 0 }]} />
-                <TouchableOpacity onPress={handleLinkParent} disabled={linkLoading} style={{ backgroundColor: '#002E6E', paddingHorizontal: 18, borderRadius: 12, justifyContent: 'center' }}>
-                  {linkLoading ? <ActivityIndicator color="#fff" /> : <Text style={{ color: '#fff', fontWeight: '900' }}>Link</Text>}
-                </TouchableOpacity>
-              </View>
-            </>
-          )}
+          <Text style={{ color: '#6B7280', marginTop: 4, fontSize: 13 }}>
+            Ask your parent to add your email ({wallet.user.email || 'the email you signed up with'}) in their dashboard. Then they can top up your wallet and set your rules.
+          </Text>
         </View>
 
         <View style={s.balanceCard}>
@@ -287,7 +328,7 @@ export default function TeenDashboard() {
         </View>
 
         <View style={s.whiteCard}>
-          <Text style={s.cardTitle}>Monthly Budget 📊</Text>
+          <Text style={s.cardTitle}>Daily Limit 📊</Text>
           <View style={{ flexDirection: 'row', justifyContent: 'space-between', marginTop: 8 }}>
             <Text style={{ fontWeight: '700' }}>₹{wallet.monthlyBudget.used} / ₹{wallet.monthlyBudget.total}</Text>
             <Text style={{ fontWeight: '900' }}>{budgetPct}% used</Text>
@@ -295,7 +336,7 @@ export default function TeenDashboard() {
           <View style={s.progressBg}>
             <View style={[s.progressFill, { width: `${budgetPct}%`, backgroundColor: budgetPct > 80 ? '#EF4444' : '#3B82F6' }]} />
           </View>
-          <Text style={{ color: '#6B7280', marginTop: 6 }}>₹{wallet.monthlyBudget.total - wallet.monthlyBudget.used} remaining this month</Text>
+          <Text style={{ color: '#6B7280', marginTop: 6 }}>₹{wallet.monthlyBudget.total - wallet.monthlyBudget.used} remaining today</Text>
         </View>
 
         <View style={s.whiteCard}>
@@ -347,17 +388,20 @@ export default function TeenDashboard() {
           <Text style={{ marginHorizontal: 16, marginTop: 12, fontWeight: '800', color: payMsg.includes('Approved') || payMsg.includes('paid') ? 'green' : 'red' }}>{payMsg}</Text>
         ) : null}
         <View style={{ flexDirection: 'row', gap: 10, paddingHorizontal: 16, marginTop: 12 }}>
-          <TouchableOpacity onPress={() => handlePay('Online shopping', 500)} style={[s.demoBtn, { backgroundColor: '#EF4444' }]}>
+          <TouchableOpacity onPress={() => handlePay('food', 50, 'Canteen')} style={[s.demoBtn, { backgroundColor: '#16A34A' }]}>
+            <Text style={s.demoBtnText}>Pay ₹50 Canteen</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={() => handlePay('games', 100, 'Game Store')} style={[s.demoBtn, { backgroundColor: '#EF4444' }]}>
             <Text style={s.demoBtnText}>Try Blocked Purchase</Text>
           </TouchableOpacity>
-          <TouchableOpacity onPress={() => handlePay('Games', 600)} style={[s.demoBtn, { backgroundColor: '#F59E0B' }]}>
+          <TouchableOpacity onPress={() => handlePay('food', Math.floor(wallet.monthlyBudget.total) + 1, 'Big Order')} style={[s.demoBtn, { backgroundColor: '#F59E0B' }]}>
             <Text style={s.demoBtnText}>Try Over Limit</Text>
           </TouchableOpacity>
         </View>
 
         <View style={s.whiteCard}>
           <Text style={s.cardTitle}>Spending Insights 📈</Text>
-          <Text style={{ color: '#6B7280', marginTop: 4 }}>Total spent: ₹850 this week</Text>
+          <Text style={{ color: '#6B7280', marginTop: 4 }}>Total spent: ₹{wallet.totalSpentAmount ?? 0} in recent activity</Text>
           {wallet.spending.map((item: any, i: number) => (
             <View key={i} style={{ marginTop: 14 }}>
               <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
@@ -478,12 +522,12 @@ export default function TeenDashboard() {
                 <View style={[s.qrDotBig, { bottom: 8, left: 20 }]} />
                 <View style={[s.qrDotBig, { bottom: 8, right: 8 }]} />
               </View>
-              <Text style={{ marginTop: 12, fontWeight: '700', color: '#6B7280' }}>PayPal QR Scanner (Demo)</Text>
+              <Text style={{ marginTop: 12, fontWeight: '700', color: '#6B7280' }}>QR Scanner (Demo)</Text>
             </View>
             <Text style={{ marginTop: 12, fontWeight: '600' }}>Parent rules will be checked first</Text>
-            <Text style={{ marginTop: 4, fontWeight: '600' }}>Secure payment via PayPal</Text>
+            <Text style={{ marginTop: 4, fontWeight: '600' }}>The payment goes through the same rules</Text>
             <TouchableOpacity onPress={handleScanPay} style={{ backgroundColor: '#002E6E', padding: 16, borderRadius: 14, alignItems: 'center', marginTop: 16 }}>
-              <Text style={{ color: '#fff', fontWeight: '900', fontSize: 16 }}>Pay ₹120 via PayPal →</Text>
+              <Text style={{ color: '#fff', fontWeight: '900', fontSize: 16 }}>Pay ₹120 →</Text>
             </TouchableOpacity>
             <TouchableOpacity onPress={() => setShowScanner(false)} style={{ padding: 14, alignItems: 'center', marginTop: 8 }}>
               <Text style={{ fontWeight: '800', color: '#6B7280' }}>Cancel</Text>
@@ -537,10 +581,10 @@ export default function TeenDashboard() {
                   <Text style={s.profileValue}>{wallet.user.lastLogin}</Text>
                 </View>
 
-                <TouchableOpacity style={[s.logoutBtn, { marginTop: 18 }]} onPress={() => Alert.alert('Logout', 'Logout from this device?', [{ text: 'Cancel' }, { text: 'Logout', onPress: async () => { await AsyncStorage.removeItem('token'); setShowProfile(false); router.push('/'); } }])}>
+                <TouchableOpacity style={[s.logoutBtn, { marginTop: 18 }]} onPress={() => Alert.alert('Logout', 'Logout from this device?', [{ text: 'Cancel' }, { text: 'Logout', onPress: async () => { await clearSession(); setShowProfile(false); router.push('/'); } }])}>
                   <Text style={{ color: '#002E6E', fontWeight: '900', fontSize: 16 }}>Logout From This Device</Text>
                 </TouchableOpacity>
-                <TouchableOpacity style={[s.logoutBtn, { backgroundColor: '#FFE5E5', marginTop: 10 }]} onPress={() => Alert.alert('Logout From All Devices', 'You will be logged out from all devices. Continue?', [{ text: 'Cancel' }, { text: 'Logout All', style: 'destructive', onPress: async () => { await AsyncStorage.removeItem('token'); setShowProfile(false); router.push('/'); } }])}>
+                <TouchableOpacity style={[s.logoutBtn, { backgroundColor: '#FFE5E5', marginTop: 10 }]} onPress={() => Alert.alert('Logout From All Devices', 'You will be logged out from all devices. Continue?', [{ text: 'Cancel' }, { text: 'Logout All', style: 'destructive', onPress: async () => { await clearSession(); setShowProfile(false); router.push('/'); } }])}>
                   <Text style={{ color: 'red', fontWeight: '900', fontSize: 16 }}>Logout From All Devices</Text>
                 </TouchableOpacity>
                 <View style={{ height: 40 }} />
