@@ -1,4 +1,3 @@
-import { Audio } from 'expo-av';
 import { useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { Alert, Image, Modal, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
@@ -18,7 +17,7 @@ export default function PiggyBank() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [soundType, setSoundType] = useState<'Coin Collect' | 'Cash Register'>('Coin Collect');
   const [volume, setVolume] = useState(70);
-  const [sound, setSound] = useState<Audio.Sound | null>(null);
+  const [sound, setSound] = useState<any>(null);
 
   // Add to Savings - Category select
   const [showAdd, setShowAdd] = useState(false);
@@ -55,6 +54,8 @@ export default function PiggyBank() {
         ? require('../../assets/sounds/coin.mp3')
         : require('../../assets/sounds/cash.mp3');
       if (sound) await sound.unloadAsync();
+      // Loaded only when needed, so the screen still opens if the sound module is missing (e.g. in Expo Go)
+      const { Audio } = require('expo-av');
       const { sound: newSound } = await Audio.Sound.createAsync(file);
       await newSound.setVolumeAsync(volume / 100);
       setSound(newSound);
