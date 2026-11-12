@@ -6,8 +6,8 @@ import { useEffect } from 'react';
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  // NunitoSans-Regular, NunitoSans-Bold and rubik.ttf are empty (0 byte) files in the repo, so they are not loaded.
-  // Text that asks for 'Rubik' simply uses the phone's default font. Put real font files back, then add them here.
+  // Some font files in the repo are empty (0 byte), so only Samarkan is loaded.
+  // Text that asks for 'Rubik' uses the phone's default font instead.
   const [loaded, fontError] = useFonts({
     'Samarkan': require('../../assets/fonts/samarkan.ttf'),
   });
@@ -19,9 +19,6 @@ export default function RootLayout() {
     }
   }, [loaded, fontError]);
 
-  // Agar font load na ho tab bhi app dikhega, blank nahi rahega
-  // if (!loaded) return null; -> YE LINE HATA DE
-
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#0A235A' } }}>
       <Stack.Screen name="index" />
@@ -31,7 +28,6 @@ export default function RootLayout() {
       <Stack.Screen name="login-parent" />
       <Stack.Screen name="teen-dashboard" />
       <Stack.Screen name="parent-dashboard" />
-      <Stack.Screen name="dashboard" />
     </Stack>
   );
 }
