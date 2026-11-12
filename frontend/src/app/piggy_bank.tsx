@@ -48,7 +48,7 @@ export default function PiggyBank() {
 
   const total = goals.reduce((s, g) => s + g.amount, 0);
 
-  // Uses expo-audio (works in Expo Go). Loaded only when needed,
+  // Uses expo-audio. Loaded only when needed,
   // so the screen still opens even if sound is not available.
   const playSound = () => {
     try {
