@@ -6,18 +6,18 @@ import { useEffect } from 'react';
 SplashScreen.preventAutoHideAsync();
 
 export default function RootLayout() {
-  const [loaded] = useFonts({
+  // NunitoSans-Regular, NunitoSans-Bold and rubik.ttf are empty (0 byte) files in the repo, so they are not loaded.
+  // Text that asks for 'Rubik' simply uses the phone's default font. Put real font files back, then add them here.
+  const [loaded, fontError] = useFonts({
     'Samarkan': require('../../assets/fonts/samarkan.ttf'),
-    'NunitoSans-Regular': require('../../assets/fonts/NunitoSans-Regular.ttf'),
-    'NunitoSans-Bold': require('../../assets/fonts/NunitoSans-Bold.ttf'),
-    'Rubik': require('../../assets/fonts/rubik.ttf'),
   });
 
   useEffect(() => {
-    if (loaded) {
+    // Hide the splash screen even if a font fails, so the app never gets stuck on it
+    if (loaded || fontError) {
       SplashScreen.hideAsync();
     }
-  }, [loaded]);
+  }, [loaded, fontError]);
 
   // Agar font load na ho tab bhi app dikhega, blank nahi rahega
   // if (!loaded) return null; -> YE LINE HATA DE
