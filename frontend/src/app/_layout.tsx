@@ -3,21 +3,27 @@ import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { useEffect } from 'react';
 
-SplashScreen.preventAutoHideAsync();
+SplashScreen.preventAutoHideAsync().catch(() => {});
 
 export default function RootLayout() {
-  // Some font files in the repo are empty (0 byte), so only Samarkan is loaded.
-  // Text that asks for 'Rubik' uses the phone's default font instead.
   const [loaded, fontError] = useFonts({
     'Samarkan': require('../../assets/fonts/samarkan.ttf'),
   });
 
+  // Hide the splash as soon as fonts are ready or failed
   useEffect(() => {
-    // Hide the splash screen even if a font fails, so the app never gets stuck on it
     if (loaded || fontError) {
-      SplashScreen.hideAsync();
+      SplashScreen.hideAsync().catch(() => {});
     }
   }, [loaded, fontError]);
+
+  // Safety: always hide the splash after 3 seconds, so the app never gets stuck
+  useEffect(() => {
+    const t = setTimeout(() => {
+      SplashScreen.hideAsync().catch(() => {});
+    }, 3000);
+    return () => clearTimeout(t);
+  }, []);
 
   return (
     <Stack screenOptions={{ headerShown: false, contentStyle: { backgroundColor: '#0A235A' } }}>
