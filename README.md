@@ -1,7 +1,7 @@
 # Teen Wallet (Parent-Controlled Teen Wallet with Financial Learning)
 
 PayPal AI Hackathon project by team RupeeRanger. A mobile app where a parent adds money with **PayPal (sandbox)** and sets spending rules, and a teen spends, saves and learns inside those rules, with an **AI money tutor** to ask questions.
-
+https://expo.dev/accounts/saubhagya23/projects/RupeeRanger/builds/86343870-0eba-4fb4-b0d9-003a43ceb7e0
 **Live backend:** https://teenwallet.onrender.com/health (free server, the first request after a quiet period can take up to a minute)
 
 ## How we use PayPal
